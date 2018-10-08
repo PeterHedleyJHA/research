@@ -1,0 +1,85 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+ 
+
+Database Multpile Queries
+
+--- Attempt 1 - join statements with a ';' and let sql sort it on db side. (Example doesn't run)
+
+```{r}
+dbSendQuery(chp,paste(paste(nondup_qry[nondup_df[,'is_checked']==1],collapse=';'),';',sep = ''))
+```
+
+--- Attempt 2 - Try to create table and append values e.g.
+
+```{r}
+query <- "insert into table (col1,col2,...)
+       values 
+        (val1,val2,...)
+        on conflict (primary_Key) do update set
+        (col1,col2,...)
+        col1 = EXCLUDED.col1,col2 = EXCLUDED.col2,..."
+```
+
+as a function with a dataframe input...
+
+```{r}
+#takes name of parent table to update, data, col in parent table to match (pk1) to pk2 in data
+update_or_insert <- function(table_name,data,pk){
+  #change dataframe to csv string
+  rows <- apply(data,1,function(row) return(paste(row,collapse=',')))
+  string <- paste("(",paste(rows,collapse='),('),")",sep = "")
+  
+  #generate sql query
+  columns_match <- paste(lapply(colnames(data),function(col) return(sprintf("%s = EXCLUDED.%s",col,col))),collapse=',')
+  columns <- paste(colnames(data),collapse=',')
+  full_string <- sprintf("insert into %s (%s)
+                       values %s
+                       on conflict (%s) do update set %s",table_name,columns,string,pk,columns_match)
+  
+  gsub('NA','Null::int',full_string)
+}
+```
+
+** Failure due to id being assigned as a sequence by the db. Hence ID is not included when inserting and id would not be a column in the dataframe so conflict would never be called.
+
+Working Attempt: Use with-as statements for the query
+
+```{r}
+create_update_v3 <- function(table_name,data,pk){
+  
+  #check primary key exists in data if not make null
+  if ( !(pk %in% colnames(data)) ){
+    data[pk] = rep("NA",nrow(data))
+  }
+  
+  #change dataframe to csv string
+  rows <- apply(data,1,function(row) return(paste(row,collapse=',')))
+  string <- paste("(",paste(rows,collapse='),('),")",sep = "")
+  
+  #generate sql query
+  columns_match <- paste(lapply(colnames(data),function(col) return(sprintf("%s = u.%s",col,col))),collapse=',')
+  columns <- paste(colnames(data),collapse=',')
+  columns_no_pk <- colnames(data)[colnames(data) != pk] %>% paste(collapse=',')
+  
+  full_string <- sprintf("with
+                          all_ids as (
+                            select * from 
+                            (
+                              values %s
+                            )
+                            as t (%s)
+                          ),
+                          update_ids as (select * from all_ids where %s is not NULL),
+                          insert_ids as (select * from all_ids where %s is NULL),
+                          update_qry as (UPDATE %s t set %s from update_ids u where t.%s=u.%s)
+                          insert into %s (%s) select %s from insert_ids;                       
+                           ",string,columns,pk,pk,table_name,columns_match,pk,pk,table_name,columns_no_pk,columns_no_pk)
+  gsub('NA','Null::int',full_string)
+}
+```
+
